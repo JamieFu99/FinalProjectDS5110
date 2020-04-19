@@ -861,12 +861,6 @@ write.csv(prediction5, file = 'prediction5.csv', row.names = F)
 ```
 *0.12445 from kaggle*
 
-###Weighted model
-```{r}
-Weighted_model <- data.frame(Id = Id_labels, SalePrice = (prediction_ridge+3*prediction_lasso)/4)
-write.csv(Weighted_model, file = 'prediction6.csv', row.names = F)
-```
-*0.12052 from kaggle*
 
 ##Generalized Additive Models
 
@@ -957,3 +951,11 @@ prediction12<-data.frame(Id = Id_labels, SalePrice =  pred)
 write.csv(prediction12, file = "prediction12.csv", row.names = FALSE)
 ```
 *0.12553 from Kaggle*
+
+###Weighted model
+```{r}
+Weighted_model <- data.frame(Id = Id_labels, SalePrice = (prediction_boost+3*prediction_lasso)/4)
+write.csv(Weighted_model, file = 'prediction6.csv', row.names = F)
+```
+*0.11990 from Kaggle*
+
