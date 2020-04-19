@@ -971,9 +971,16 @@ train_houses %>%
   group_by(HouseStyle) %>%
   table()
 
+train_houses%>%filter(X2ndFlrSF!=0)%>%ggplot(aes(x=X2ndFlrSF,y=log(SalePrice)))+geom_point()
 
+X2ndFlrSFFit = lm(SalePrice~X2ndFlrSF, train_houses)
+
+train_houses%>%add_residuals(X2ndFlrSFFit)%>%
+  ggplot(aes(x=X2ndFlrSF,y=resid))+geom_point(alpha=0.5)
+rmse(X2ndFlrSFFit, train_houses)
 ```
 Mode is 0 square feet, aka does not have a second floor. Create a new variable to identify if a house has a 2nd story. It is unclear how a house can only be 1 Story and have SF for a second floor. Perhaps it is the same SF as the first floor which may be causing the problem. It is not the same as any other SF so we will remove these observations from the dataset. Houses that are 1Story or 1.5Story have 2nd floor SF value of 0 and are categorized as not having a second floor. Split Foyer and Split Level houses are trickier to categorize so they will be kept as is (with or without 2nd floor SF). 
+I wiped out the 0 value of the saleprice while ploting the relationship between X2ndFlrSF and SalePrice, because if the 0 value means the house doesn't have a second floor, so the salevalue doesn' infected by the 0 value. And there is a positive linar relationship of X2ndFlrSF and log(salePrice). There is clear positive relationship between X2ndFlrSF and residuals. So I won't add the variable into the model.
 ##LowQualFinSF
 ```{r}
 summary(train_houses$LowQualFinSF)
@@ -987,8 +994,11 @@ train_houses %>%
   filter(LowQualFinSF > 0) %>%
   select(LowQualFinSF) %>%
   boxplot()
+
+train_houses%>%filter(LowQualFinSF > 0)%>%ggplot(aes(x=LowQualFinSF,y=SalePrice))+geom_point()
+
 ```
-Heavily skewed left, mean median and mode are 0 SF. No missing values. A lot of outliers. When all the 0 values are taken away, the distribution is slightly skewed right with no outliers. 
+Heavily skewed left, mean median and mode are 0 SF. No missing values. A lot of outliers. When all the 0 values are taken away, the distribution is slightly skewed right with no outliers.I filtered the variable more than 0, because 0 value means there is no Low quality finished square in the house and thus doesn't have any infect on the sale price. There is no clear relationship of LowQualFinSF of SalePrice. So I won't add this into the model.
 ##GrLivArea
 ```{r}
 summary(train_houses$GrLivArea)
@@ -1024,26 +1034,45 @@ boxplot(train_houses$PropUnlivArea)
 train_houses %>%
   filter(PropLivGrLivArea > 1) %>%
   count()
+
+train_houses%>%ggplot(aes(x=GrLivArea,y=SalePrice))+geom_point()+geom_smooth()
+train_houses%>%ggplot(aes(x=PropGrLivArea,y=SalePrice))+geom_point()+geom_smooth()
+
+GrLivAreaFit=lm(SalePrice~GrLivArea,train_houses)
+
+train_houses%>%add_residuals(GrLivAreaFit)%>%ggplot(aes(x=GrLivArea,y=resid))+geom_point(alpha=0.5)
+rmse(GrLivAreaFit, train_houses)
 ```
 Left skewed distribution, no missing values. Does not tell me much on its own, would have to look in relation to other SF variables. The new variable PropGrLivArea is heavily skewed left with the mode being .5 of SF of the house being above ground living area. There are 17 observations with a value greater than 1 for PropLivGrLivArea, if using this metric will need to ensure to handle these observations. The proportion of unliveable area in the total SF is roughly symmetrically distributed with a max value of .5 and median at .2. 
+Because as there is more SF the sale price will be higher. So I will chose the GrLivArea to do analysis. As it's shown in the point plot, there is clear positive relationship. And the residuals are symmatric distributed. So I will consider add it into the model. And the rmse is low, so it may be appropriate to add into the model.
 ##BsmtFullBath
 ```{r}
 summary(train_houses$BsmtFullBath)
 
 train_houses %>%
   ggplot()+geom_bar(aes(x=BsmtFullBath))
+##transfor into factors
+train_houses <- train_houses%>%mutate(FBsmtFullBath = factor(BsmtFullBath, level=c(0,1,2,3)))
+train_houses%>%ggplot()+geom_boxplot(aes(x=FBsmtFullBath,y=SalePrice))
+
 
 ```
-Left skewed, majority have 0 full bathrooms in the basement when looking at all observations. Since there are only at most 37 observations in the data that do not have a basement filtering for those will not produce significant changes.
+Left skewed, majority have 0 full bathrooms in the basement when looking at all observations. Since there are only at most 37 observations in the data that do not have a basement filtering for those will not produce significant changes. The sale price increased between 0 and 1 Basement full bathrooms. But there is not too much different among 1, 2 and 3 full bathrooms. So I think there is oly weak realtionship, I won't consider using the variable while doing the model. 
 ##BsmtHalfBath
 ```{r}
 summary(train_houses$BsmtHalfBath)
 
-train_houses %>%
+train_houses %>%filter(!is.na(BsmtHalfBath))%>%
   ggplot()+geom_bar(aes(x=BsmtHalfBath))
 
+##transfor into factors
+train_houses <- train_houses%>%mutate(FBsmtHalfBath=factor(BsmtHalfBath,level=c(0,1)))
+
+
+train_houses%>%filter(!is.na(BsmtHalfBath))%>%ggplot(aes(x=FBsmtHalfBath,y=SalePrice))+geom_boxplot()
+
 ```
-Left skewed. Mode is 0.
+Left skewed. Mode is 0. There is no clear relationship between Basement half bathrooms and sale price, so I won't use this value.
 ##FullBath and HalfBath
 ```{r}
 summary(train_houses$FullBath)
@@ -1072,18 +1101,16 @@ summary(train_houses$TotalBath)
 
 boxplot(train_houses$TotalBath)
 
-#Modeling Assumptions
-ggplot(data=train_houses, mapping=aes(x=TotalBath, y=SalePrice))+
-  geom_point()
+train_houses%>%ggplot(aes(x=factor(TotalBath,levels = c(0,0.5,1,1.5,2,2.5,3,3.5,4,4.5,5,5.5,6)),y=SalePrice))+geom_boxplot()
 
-Fit1 <- lm(SalePrice ~ TotalBath, data = train_houses)
+TotalBathFit=lm(SalePrice~TotalBath, train_houses)
 
-train_houses %>%
-  add_residuals(Fit1) %>%
-  ggplot(aes(x=TotalBath, y=resid/100000)) + 
-  geom_point()
+train_houses%>%add_residuals(TotalBathFit)%>%ggplot(aes(x=factor(TotalBath,levels = c(0,0.5,1,1.5,2,2.5,3,3.5,4,4.5,5,5.5,6)), y=resid))+geom_boxplot()
+
+
 ```
 Only the bathrooms that are above ground (ie. not including those in the basement). Create new variable for the total number of bathrooms (and total number of full baths and half baths), it will count half baths as .5 (as is commonly done in realty). For the new variable Total Baths, the minimum number of bathrooms is 1 (legal requirement), mode is 2 bathrooms, left skewed. 
+There is a positive relationship while the number of TotalBath less than 4.5. But the relationship is not strong, plus there is no positive relationship while x range in [4.5,6]. And the residuals are not random distributed. So I don't think this is a good to add into the model.
 ##BedroomAbvGr
 ```{r}
 summary(train_houses$BedroomAbvGr)
@@ -1091,8 +1118,11 @@ summary(train_houses$BedroomAbvGr)
 ggplot(data=train_houses)+geom_bar(aes(x=BedroomAbvGr))
 
 boxplot(train_houses$BedroomAbvGr)
+
+train_houses%>%ggplot(aes(x=factor(BedroomAbvGr),y=SalePrice))+geom_boxplot()
 ```
 No missing values, if they do not have a bedroom above ground they must have a bedroom somewhere else or may be a studio which techincally has 0 bedrooms. Data is skewed to the right, mode is 3 bedrooms. 
+There is no clear relationship between BedroomAbvGr anf SalePrice.
 ##KitchenAbvGr
 ```{r}
 summary(train_houses$KitchenAbvGr)
@@ -1100,12 +1130,16 @@ summary(train_houses$KitchenAbvGr)
 ggplot(data=train_houses)+geom_bar(aes(x=KitchenAbvGr))
 
 boxplot(train_houses$KitchenAbvGr)
+
+train_houses%>%ggplot(aes(x=factor(KitchenAbvGr),y=SalePrice))+geom_boxplot()
 ```
 Mode is 1 kitchen, data is symmetric, any number of kitchens other than 1 is considered an outlier. No missing values, I have seen some places like small studio apartments that do not have a kitchen so this is possible in a very small living space. They tend to be less expensive than places with basic amenities though.
+There is not clear relationship between KitchenAbvGr. It seems like the 1 kitchen house has higher price. But the relationship is not strong.
 ##KitchenQual
 ```{r}
 summary(train_houses$KitchenQual)
 
+ggplot(data=train_houses, aes(x=KitchenQual))+geom_bar()
 ##Order the factors
 train_houses$KitchenQual <- ordered(train_houses$KitchenQual, levels = c('Po','Fa','TA','Gd','Ex'))
 
@@ -1121,44 +1155,83 @@ train_houses <- train_houses %>%
 
 boxplot(train_houses$KitchenQual)
 ```
+```{r}
+train_houses%>%filter(!is.na(KitchenQual))%>%ggplot(aes(x=factor(KitchenQual),y=SalePrice))+geom_boxplot()
+
+KitchenQualFit =lm(SalePrice~KitchenQual,train_houses)
+
+train_houses%>%filter(!is.na(KitchenQual))%>%add_residuals(KitchenQualFit)%>%ggplot(aes(x=factor(KitchenQual),y=resid))+geom_boxplot()
+rmse(KitchenQualFit, train_houses)
+```
 Poor is not represented in the train data. Mode is Typical/Average kitchen quality, data is skewed right. There are no missing values but there are some observations that do not have kitchens, there is only one data point with no kitchen, change it to NA. 
+
+The relationship between KitchenQual is a clear positive relationship, the better kitchen quality the higher the price of the house. But the residuals are not randomly distributed, so it may not be good enough to add into the model.
 ##TotRmsAbvGrd
 ```{r}
 ggplot(data=train_houses, aes(x=TotRmsAbvGrd))+geom_bar()
 
 boxplot(train_houses$TotRmsAbvGrd)
 
-##Create a new varaible that counts bathrooms also
-train_houses$TotRooms <- train_houses$TotRmsAbvGrd+train_houses$TotalBath
 
-boxplot(train_houses$TotRooms)
+
+
+##Create a new varaible that counts bathrooms also
+train_houses = train_houses%>%mutate(TotRooms = TotRmsAbvGrd+TotalBath)
+
+
+train_houses%>%ggplot(aes(x=factor(TotRmsAbvGrd),y=SalePrice))+geom_boxplot()
+train_houses%>%ggplot(aes(x=factor(TotRooms),y=SalePrice))+geom_boxplot()
+
+TotRmsAbvGrdFit=lm(SalePrice~TotRmsAbvGrd, train_houses)
+train_houses%>%add_residuals(TotRmsAbvGrdFit)%>%ggplot(aes(x=factor(TotRmsAbvGrd),y=resid))+geom_boxplot()
+
+rmse(TotRmsAbvGrdFit, train_houses)
 ```
 Data is roughly symmetric with a few outliers, anything > 10 rooms. This metric does not include bathrooms. New varaible created: TotRooms includes bathrooms, it seems roughly symmetric. 
+
+There is positive relationship between Total rooms above grade (does not include bathrooms) and sale price ,and there is no clear relationship when included bathrooms. And the residuals are randomsly distributed. There is except case when the variable is 12 and 14, so I will reconsider if this one is good to be add into model.
 ##Functional
 ```{r}
 train_houses$Functional <- ordered(train_houses$Functional, levels = c('Typ','Min1','Min2','Mod','Maj1','Maj2','Sev','Sal'))
 
 ggplot(data=train_houses, aes(x=Functional))+geom_bar()
+
+train_houses%>%ggplot(aes(x=Functional, y=SalePrice))+geom_boxplot()
 ```
 Train dataset does not include "Sal," mode is typical. I do not know difference between Min1 and Min2 or Maj1 and Maj2 but in terms of quality Typ > Min > Mod > Maj > Sev > Sal.
+There is no relationship between Functional and SalePrice.
 ##Fireplaces
 ```{r}
 ggplot(data=train_houses, aes(x=Fireplaces))+geom_bar()
 
 boxplot(train_houses$Fireplaces)
+
+train_houses%>%ggplot(aes(x=factor(Fireplaces),y=SalePrice))+geom_boxplot()
+
+FirePlaceFit = lm(SalePrice~Fireplaces, train_houses)
+
+train_houses%>%ggplot(aes(x=factor(Fireplaces),y=SalePrice))+geom_boxplot()
 ```
-No missing values, data is left skewed, any properties with more than 2 fireplaces is an outlier. 
+No missing values, data is left skewed, any properties with more than 2 fireplaces is an outlier.
+There is positibe relasionship between Fireplace and SalePrice. The residuals have a clear relationship with Fireplaces, so it's not appropriate to be added into the model.
 ##FireplacesQu
 ```{r}
 train_houses$FireplaceQu <- factor(train_houses$FireplaceQu, levels = c('Po','Fa','TA','Gd','Ex'))
 train_houses %>%
   filter(!is.na(FireplaceQu)) %>%
   ggplot(aes(x=FireplaceQu))+geom_bar()
+
+train_houses%>%filter(!is.na(FireplaceQu))%>%ggplot(aes(x=FireplaceQu, y=SalePrice))+geom_boxplot()
+FireplaceQuFit = lm(SalePrice~FireplaceQu, train_houses)
+
+train_houses%>%filter(!is.na(FireplaceQu))%>%add_residuals(FireplaceQuFit)%>%ggplot(aes(x=FireplaceQu, y=SalePrice))+geom_boxplot()
+
 ```
 Majority will be NA since most observations do not have a fireplace, when filtering out all NA (NA means no fireplace) then the data is skewed left with mode rating 'Good.'
+There is very clear positive relationship between FireplaceQu. But there is clear relationship with residuals, as shown in the plot, the residuals has a positive relationship against FirePlace. So this variable is not appropriate to be added into the model.
 ##GarageType
 ```{r}
-train_houses$GarageType <- factor(train_houses$GarageType, levels = c('Detachd','CarPort','BuiltIn','Basement','Attchd', '2Types'))
+train_houses$GarageType <- factor(train_houses$GarageType, levels = c('Detachd','CarPort','BuiltIn','Basement','Attchd', '2Types','NA'))
 
 train_houses %>%
   filter(!is.na(GarageType)) %>%
@@ -1174,40 +1247,14 @@ ggplot(data=train_houses)+geom_bar(aes(x=Garage))
 
 summary(train_houses$Garage)
 
-ggplot(data=train_houses, mapping=aes(x=Garage, y=SalePrice))+
-  geom_boxplot()+
-  coord_flip()
+train_houses%>%ggplot(aes(x=GarageType, y=SalePrice))+geom_boxplot()
 
-Fit1 <- lm(SalePrice ~ Garage, data = train_houses)
+GarageTypeFit = lm(SalePrice~GarageType, train_houses)
 
-train_houses %>%
-  add_residuals(Fit1) %>%
-  ggplot(aes(x=Garage, y=resid/100000)) + 
-  geom_boxplot()+
-  coord_flip()
+train_houses%>%add_residuals(GarageTypeFit)%>%ggplot(aes(x=GarageType, y=resid))+geom_boxplot()
 ```
 Most houses have garages and majority of the garages are attached. Anything with NA indicates there is no garage (no missing values). There are 79 observations that do not have a garage.
-##GarageYrBuilt
-```{r}
-summary(train_houses$GarageYrBlt)
-
-ggplot(data=train_houses)+geom_histogram(aes(x=GarageYrBlt))
-
-boxplot(train_houses$GarageYrBlt)
-
-#Variable to see if the garage is original to the house (the GarageYrBlt == YearBuilt)
-train_houses <- train_houses %>%
-  mutate(OriginalGarage = ifelse(YearBuilt == GarageYrBlt, 'Y', 'N'))
-
-train_houses$OriginalGarage <- as.factor(train_houses$OriginalGarage)
-
-summary(train_houses$OriginalGarage)
-
-train_houses %>%
-  filter(OriginalGarage == 'N', GarageYrBlt < YearBuilt) %>%
-  select(GarageYrBlt, YearBuilt)
-```
-Again 79 obs without garage. Data is skewed right, similar to the spread for the YearBuilt (which is the original contrsution date). Most of the garages are original to the house, only 284 were not constructed the same year as the house. Of those 284, 8 were constructed before the main building. Could this be a new varaible? 
+There is some relationship between GarageType and SalePrice, but the residuals are not symmetricly distributed. When the GarageType is Attchd the residuals are lower than other case.
 ##GarageFinish
 ```{r}
 summary(train_houses$GarageFinish)
@@ -1493,11 +1540,6 @@ boxplot(train_houses$SalePrice)
 summary(train_houses$SalePrice)
 ```
 Left skewed, a lot of outliers above the median. Median price is 163945. Range of prices is 717100. This is the reponse variable
-
-#Model Building
-```{r}
-
-```
 
 
 
