@@ -1,0 +1,959 @@
+---
+title: "Final Project"
+author: "Jinghan Fu Dongyu Zhou Rebecca Brent Kepan Gao"
+date: "2020/3/30"
+output:
+  pdf_document: default
+---
+
+#Loading and Exploring Data__
+Loading R packages used besides base R.
+```{r, message=FALSE, warning=FALSE,echo=FALSE}
+library(knitr)
+library(ggplot2)
+library(plyr)
+library(dplyr)
+library(corrplot)
+library(caret)
+library(gridExtra)
+library(scales)
+library(Rmisc)
+library(ggrepel)
+library(randomForest)
+library(psych)
+library(xgboost)
+library(PerformanceAnalytics)
+library(naniar)
+library(glmnet)
+library(leaps)
+library(pls)
+library(splines)
+library(gam)
+library(tree)
+library(gbm)
+```
+
+```{r}
+train <- read.csv("~/DS5110/house-prices-advanced-regression-techniques/train.csv", stringsAsFactors = F)
+test <- read.csv("~/DS5110/house-prices-advanced-regression-techniques/test.csv", stringsAsFactors = F)
+```
+
+
+```{r}
+dim(train)
+str(train)
+res <- sapply(train,class)
+table(res)
+```
+
+#Data pre-processing
+```{r}
+Id_labels <- test$Id
+test$Id <- NULL
+train$Id <-NULL
+test$SalePrice <- NA
+```
+
+
+```{r}
+data <- rbind(train, test)
+dim(data)
+```
+
+#Variable Exploration & Missing data imputation
+
+```{r, message=FALSE}
+ggplot(data=data[!is.na(data$SalePrice),], aes(x=SalePrice)) +
+        geom_histogram(fill="darkcyan") +
+        ggtitle("Right skewd distribution")
+```
+
+```{r}
+summary(data$SalePrice)
+```
+*Righr skewd, because most of people cannot affort high-end luxury house.*
+
+```{r}
+numeric.var <- which(sapply(data, is.numeric)) 
+length(numeric.var)
+numeric.name <- names(numeric.var) 
+#numeric.name
+```
+
+
+```{r}
+data.numeric <- data[, numeric.var]
+cor.numvar <- cor(data.numeric, use="pairwise.complete.obs", method = "pearson") 
+#cor.numvar
+cor.sorted <- as.matrix(sort(cor.numvar[,'SalePrice'], decreasing = T))
+high.cor <- names(which(apply(cor.sorted, 1 , function(x) abs(x)>0.5)))
+#high.cor
+cor.numvar <- cor.numvar[high.cor, high.cor]
+heatmap(cor.numvar, Colv = NA, Rowv = NA, scale="column")
+corrplot.mixed(cor.numvar,tl.col="chocolate2", tl.pos = "lt",tl.cex = 0.9,cl.cex = 0.9, number.cex=0.9,outline= TRUE)
+```
+We would like to deal with the top two variable since their correlation is > 0.7
+```{r}
+ggplot(data=data[!is.na(data$SalePrice),], aes(x=factor(OverallQual), y=SalePrice))+
+        geom_boxplot(col='darkolivegreen') + labs(x='Overall material and finish quality') 
+```
+*Outlier may exist in grade 4. We can check more variables to find out.*
+```{r}
+ggplot(data=data[!is.na(data$SalePrice),], aes(x=GrLivArea, y=SalePrice))+
+        geom_point(size=2, shape=23,col='coral2')+
+        labs(x='Above grade (ground) living area square feet')+
+        geom_smooth(method = "lm",color="coral4")+
+        geom_text_repel(aes(label = ifelse(train$GrLivArea[!is.na(train$SalePrice)]>4000, rownames(data), '')))
+```
+
+```{r}
+data[c(524,692,1183,1299), c('SalePrice', 'GrLivArea', 'OverallQual')]
+```
+*524 and 1299 are pretty odd, their overallQual is 10 but their saleprice are way too low. We can consider them as outlier and remove it later.*
+
+We would like to see which variables contain missing values.
+```{r}
+gg_miss_upset(data,nset = 8)
+```
+
+```{r}
+NAcol <- sapply(data,function(x) sum(is.na(x)))
+miss <- sort(NAcol,decreasing = T)
+miss[miss>0]
+length(miss[miss>0])-1
+```
+
+*The Na of SalePrice is from the test dataset, so PoolQC, MiscFeature, Alley, Fence, FireplaceQu are top 5 variables with missing value. Based on the data description, we can deal with variable by group, such as pool, basement etc,.*
+
+```{r}
+for(x in c("PoolQC","MiscFeature","Alley","Fence","FireplaceQu")){
+        data[is.na(data[,x]),x]<- "None"
+}
+```
+
+##Pool Varioble
+```{r}
+#data$PoolArea
+```
+*Most of the Pool Area is 0 so those NAs in the PoolQC make sense, so we impute 0 for NAs.*
+```{r}
+table(data$PoolQC)
+Qualities <- c('None' = 0, 'Po' = 1, 'Fa' = 2, 'TA' = 3, 'Gd' = 4, 'Ex' = 5)
+data$PoolQC<-as.integer(revalue(data$PoolQC, Qualities))
+```
+
+```{r}
+ggplot(data=data[!is.na(data$SalePrice),], aes(x=factor(PoolQC), y=SalePrice))+
+        geom_boxplot(col='darkcyan') + labs(x='Pool quality') 
+```
+*House with higher pool quality have higehr price as we predict but there are also some high house price when those houses does not have pools.*
+
+```{r}
+data[data$PoolArea>0 & data$PoolQC==0, c('PoolArea', 'PoolQC', 'OverallQual')]
+```
+*Imputing NAs in the PoolQC based on the average quality of OverallQual *
+```{r}
+data$PoolQC[2421] <- 2
+data$PoolQC[2504] <- 3
+data$PoolQC[2600] <- 2
+```
+
+
+##Miscellaneous Feature variables
+```{r}
+table(data$MiscFeature)
+data$MiscFeature <- as.factor(data$MiscFeature)
+```
+```{r}
+ggplot(data=data[!is.na(data$SalePrice),], aes(x=factor(MiscFeature), y=SalePrice))+
+  geom_bar(stat = 'summary',fun.y='median',fill='darkolivegreen4') + 
+  labs(x='Miscellaneous feature ') 
+```
+
+```{r}
+data[data$MiscVal!=0 & data$MiscFeature=="None", c('MiscVal', 'MiscFeature', 'OverallQual')]
+```
+
+```{r}
+data$MiscFeature[2550] <- 'Shed'
+```
+
+##Alley
+
+```{r}
+table(data$Alley)
+data$Alley <- as.factor(data$Alley)
+```
+```{r}
+ggplot(data=data[!is.na(data$SalePrice),], aes(x=factor(Alley), y=SalePrice))+
+  geom_bar(stat = 'summary',fun.y='median',fill='cornflowerblue')+
+  geom_label(stat = 'count',aes(label=..count..,y=..count..)) + 
+  labs(x='Type of alley access to property')
+
+```
+*House with paved alley seems to have higher price*
+
+##Fence
+```{r}
+table(data$Fence)
+data$Fence <- as.factor(data$Fence)
+```
+```{r}
+ggplot(data=data[!is.na(data$SalePrice),], aes(x=factor(Fence), y=SalePrice))+
+  geom_bar(stat = 'summary',fun.y='median',fill='aquamarine4')+
+  geom_label(stat = 'count',aes(label=..count..,y=..count..)) + 
+  labs(x='Fence quality')
+
+```
+*GoodPrv seems to have higher house price*
+
+##Fireplace Variable
+```{r}
+table(data$FireplaceQu)
+data$FireplaceQu<-as.integer(revalue(data$FireplaceQu, Qualities))
+table(data$Fireplaces)
+```
+```{r}
+ggplot(data=data[!is.na(data$SalePrice),], aes(x=factor(FireplaceQu), y=SalePrice))+
+  geom_bar(stat = 'summary',fun.y='median',fill='aquamarine4')+
+  geom_label(stat = 'count',aes(label=..count..,y=..count..)) + 
+  labs(x='Fireplace quality')
+```
+*House with higher Fireplace Quality usually have higher price*
+
+
+##Lot Variables
+```{r}
+#table(data$LotFrontage)
+```
+
+```{r}
+#table(data$LotFrontage)
+for (i in 1:nrow(data)){
+        if(is.na(data$LotFrontage[i])){
+               data$LotFrontage[i] <- as.integer(median(data$LotFrontage[data$Neighborhood==data$Neighborhood[i]], na.rm=TRUE)) 
+        }
+}
+any(is.na(data$LotFrontage))
+
+#data$LotShape
+table(data$LotShape)
+data$LotShape<-as.integer(revalue(data$LotShape, c('IR3'=0, 'IR2'=1, 'IR1'=2, 'Reg'=3)))
+#table(data$LotArea)
+
+table(data$LotConfig)
+data$LotConfig <- as.factor(data$LotConfig)
+```
+
+##Garage Variables
+GarageYrBlt GarageFinish   GarageQual   GarageCond   GarageType    
+    159          159          159          159          157       
+*We assume that the first four should have the same observation NAs, GarageType has 157 NAs, there might be lesser houses without a Garage.*
+```{r}
+table(data$GarageYrBlt)
+#data[data$GarageYrBlt==2207,c("GarageYrBlt","YearBuilt")]
+data$GarageYrBlt[2593]<-2007 #typo
+```
+
+```{r}
+data$GarageYrBlt[is.na(data$GarageYrBlt)] <- data$YearBuilt[is.na(data$GarageYrBlt)]
+any(is.na(data$GarageYrBlt))
+data[!is.na(data$GarageType) & is.na(data$GarageFinish), c('GarageCars', 'GarageArea', 'GarageType', 'GarageCond', 'GarageQual', 'GarageFinish')]
+```
+
+```{r}
+names(sort(table(data$GarageCond),decreasing = T))[1]
+data$GarageCond[2127] <-  "TA"
+
+names(sort(table(data$GarageQual),decreasing = T))[1]
+data$GarageQual[2127] <-  "TA"
+
+names(sort(table(data$GarageFinish),decreasing = T))[1]
+data$GarageFinish[2127] <-"Unf"
+
+data$GarageCars[2577] <- 0
+data$GarageArea[2577] <- 0
+data$GarageType[2577] <- NA
+```
+*Imputing mode into the house 2123, as for house 2577, just using none and 0 for those garage varible since most of the variable is NA*
+
+```{r}
+for(gar in c("GarageFinish","GarageQual","GarageCond")){
+        data[is.na(data[,gar]),gar]<-"None"
+}
+```
+
+```{r}
+table(data$GarageType)
+data$GarageType[is.na(data$GarageType)] <- 'No Garage'
+data$GarageType <- as.factor(data$GarageType)
+
+table(data$GarageFinish)
+Finish <- c('None'=0, 'Unf'=1, 'RFn'=2, 'Fin'=3)
+data$GarageFinish<-as.integer(revalue(data$GarageFinish, Finish))
+
+table(data$GarageQual)
+data$GarageQual<-as.integer(revalue(data$GarageQual, Qualities))
+
+table(data$GarageCond)
+data$GarageCond<-as.integer(revalue(data$GarageCond, Qualities))
+
+#data$GarageArea
+#data$GarageCars
+table(data$GarageCars)
+```
+##Basement Varibales
+BsmtCond BsmtExposure BsmtQual BsmtFinType2 BsmtFinType1 BsmtFullBath BsmtHalfBath 
+82           82         81           80           79      2            2  
+BsmtFinSF1   BsmtFinSF2 BsmtUnfSF TotalBsmtSF 
+         1            1         1           1
+
+```{r}
+data[!is.na(data$BsmtFinType1) & (is.na(data$BsmtCond)|is.na(data$BsmtQual)|is.na(data$BsmtExposure)|is.na(data$BsmtFinType2)), c('BsmtCond','BsmtExposure','BsmtQual','BsmtFinType2', 'BsmtFinType1')]
+```
+
+```{r}
+names(sort(table(data$BsmtCond),decreasing = T))[1]
+data$BsmtCond[c(2041, 2186, 2525)] <- "TA"
+names(sort(table(data$BsmtExposure),decreasing = T))[1]
+data$BsmtExposure[c(949, 1488, 2349)] <- "No"
+names(sort(table(data$BsmtQual),decreasing = T))[1]
+data$BsmtQual[c(2218, 2219)] <- "TA"
+names(sort(table(data$BsmtFinType2),decreasing = T))[1]
+data$BsmtFinType2[333] <- "Unf"
+```
+
+```{r}
+for(x in c("BsmtCond","BsmtExposure","BsmtQual","BsmtFinType2","BsmtFinType1")){
+      data[is.na(data[,x]),x]<-"None"
+}
+```
+
+```{r}
+data$BsmtQual[is.na(data$BsmtQual)] <- 'None'
+table(data$BsmtCond)
+data$BsmtCond<-as.integer(revalue(data$BsmtCond, Qualities))
+
+table(data$BsmtExposure)
+Exposure <- c('None'=0, 'No'=1, 'Mn'=2, 'Av'=3, 'Gd'=4)
+data$BsmtExposure<-as.integer(revalue(data$BsmtExposure, Exposure))
+
+table(data$BsmtQual)
+data$BsmtQual<-as.integer(revalue(data$BsmtQual, Qualities))
+
+table(data$BsmtFinType2)
+FinType <- c('None'=0, 'Unf'=1, 'LwQ'=2, 'Rec'=3, 'BLQ'=4, 'ALQ'=5, 'GLQ'=6)
+data$BsmtFinType2<-as.integer(revalue(data$BsmtFinType2, FinType))
+
+table(data$BsmtFinType1)
+data$BsmtFinType1<-as.integer(revalue(data$BsmtFinType1, FinType))
+```
+BsmtFullBath BsmtHalfBath  BsmtFinSF1   BsmtFinSF2 BsmtUnfSF TotalBsmtSF 
+       2            2            1            1         1           1
+```{r}
+data[(is.na(data$BsmtFullBath)|is.na(data$BsmtHalfBath)|is.na(data$BsmtFinSF1)|is.na(data$BsmtFinSF2)|is.na(data$BsmtUnfSF)|is.na(data$TotalBsmtSF)), c("BsmtQual","BsmtFullBath", "BsmtHalfBath","BsmtFinSF1", "BsmtFinSF2", "BsmtUnfSF", "TotalBsmtSF" )]
+```
+
+
+```{r}
+table(data$BsmtFullBath)
+data$BsmtFullBath[is.na(data$BsmtFullBath)] <-0
+table(data$BsmtHalfBath)
+data$BsmtHalfBath[is.na(data$BsmtHalfBath)] <-0
+#table(data$BsmtFinSF1)
+data$BsmtFinSF1[is.na(data$BsmtFinSF1)] <-0
+#table(data$BsmtFinSF2)
+data$BsmtFinSF2[is.na(data$BsmtFinSF2)] <-0
+#table(data$BsmtUnfSF)
+data$BsmtUnfSF[is.na(data$BsmtUnfSF)] <-0
+#table(data$TotalBsmtSF)
+data$TotalBsmtSF[is.na(data$TotalBsmtSF)] <-0
+```
+##Masonry Variables
+
+MasVnrType   MasVnrArea
+        24           23
+```{r}
+data[!is.na(data$MasVnrArea) & is.na(data$MasVnrType), c('MasVnrType', 'MasVnrArea')]
+```
+
+```{r}
+names(sort(table(data$MasVnrType),decreasing = T))[2]
+data$MasVnrType[2611] <- "BrkFace"
+data[2611, c('MasVnrType', 'MasVnrArea')]
+data$MasVnrType[is.na(data$MasVnrType)] <- 'None'
+Masonry <- c('None'=0, 'BrkCmn'=0, 'BrkFace'=1, 'Stone'=2)
+data$MasVnrType<-as.integer(revalue(data$MasVnrType, Masonry))
+
+table(data$MasVnrType)
+data$MasVnrArea[is.na(data$MasVnrArea)] <-0
+```
+```{r}
+ggplot(data[!is.na(data$SalePrice),],aes(x=MasVnrType,y=SalePrice))+
+geom_bar(stat = 'summary',fun.y='median',fill='plum3')+
+geom_label(stat='count',aes(label=..count..,y=..count..))
+```
+
+
+
+```{r}
+table(data$MSZoning)
+names(sort(table(data$MSZoning),decreasing = T))[1]
+data$MSZoning[is.na(data$MSZoning)] <- "RL"
+data$MSZoning <- as.factor(data$MSZoning)
+```
+__Utilities & Functional__
+```{r}
+table(data$Utilities)
+data$Utilities <- NULL
+```
+*Since Most of the Utilitis are AllPub, we can ignore this Variable*
+
+```{r}
+table(data$Functional)
+names(sort(table(data$Functional),decreasing = T))[1]
+data$Functional[is.na(data$Functional)] <- "Typ"
+Functions<-c('Sal'=0, 'Sev'=1, 'Maj2'=2, 'Maj1'=3, 'Mod'=4, 'Min2'=5, 'Min1'=6, 'Typ'=7)
+data$Functional <- as.integer(revalue(data$Functional,Functions))
+```
+
+```{r}
+table(data$Electrical)
+names(sort(table(data$Electrical),decreasing = T))[1]
+data$Electrical[is.na(data$Electrical)] <-"SBrkr"
+data$Electrical <- as.factor(data$Electrical)
+```
+
+```{r}
+table(data$KitchenQual)
+names(sort(table(data$KitchenQual),decreasing = T))[1]
+data$KitchenQual[is.na(data$KitchenQual)] <- 'TA'
+data$KitchenQual<-as.integer(revalue(data$KitchenQual, Qualities))
+table(data$KitchenAbvGr)
+```
+##Exterior Variable
+Exterior1st  Exterior2nd   
+          1            1  
+
+```{r}
+table(data$Exterior1st)
+names(sort(table(data$Exterior1st),decreasing = T))[1]
+data$Exterior1st[is.na(data$Exterior1st)] <-"VinylSd"
+data$Exterior1st <- as.factor(data$Exterior1st)
+
+table(data$Exterior2nd)
+names(sort(table(data$Exterior2nd),decreasing = T))[1]
+data$Exterior2nd[is.na(data$Exterior2nd)] <- "VinylSd"
+data$Exterior2nd <- as.factor(data$Exterior2nd)
+
+table(data$ExterQual)
+data$ExterQual<-as.integer(revalue(data$ExterQual, Qualities))
+
+table(data$ExterCond)
+data$ExterCond<-as.integer(revalue(data$ExterCond, Qualities))
+```
+##Sale Variables
+```{r}
+table(data$SaleType)
+names(sort(table(data$SaleType),decreasing = T))[1]
+data$SaleType[is.na(data$SaleType)] <- "WD"
+data$SaleType <- as.factor(data$SaleType)
+
+table(data$SaleCondition)
+data$SaleCondition <- as.factor(data$SaleCondition)
+```
+
+##Categorical variables
+```{r}
+cha.var <- which(sapply(data, is.character)) 
+cha.name <- names(cha.var)
+cha.name
+```
+ 
+```{r}
+table(data$Street)
+data$Street<-as.integer(revalue(data$Street, c('Grvl'=0, 'Pave'=1)))
+```
+```{r}
+table(data$LandContour)
+data$LandContour <- as.factor(data$LandContour)
+```
+```{r}
+table(data$LandSlope)
+data$LandSlope<-as.integer(revalue(data$LandSlope, c('Sev'=0, 'Mod'=1, 'Gtl'=2)))
+```
+```{r}
+table(data$Neighborhood)
+data$Neighborhood <- as.factor(data$Neighborhood)
+```
+```{r}
+table(data$Condition1)
+data$Condition1 <- as.factor(data$Condition1)
+```
+```{r}
+table(data$Condition2)
+data$Condition2 <- as.factor(data$Condition2)
+```
+```{r}
+table(data$BldgType)
+data$BldgType <- as.factor(data$BldgType)
+
+```
+
+```{r}
+table(data$HouseStyle)  
+data$HouseStyle <- as.factor(data$HouseStyle)
+
+```
+
+```{r}
+table(data$RoofStyle)
+data$RoofStyle <- as.factor(data$RoofStyle)
+
+```
+
+
+```{r}
+table(data$CentralAir)
+data$CentralAir<-as.integer(revalue(data$CentralAir, c('N'=0, 'Y'=1)))
+
+```
+
+```{r}
+table(data$HeatingQC)
+data$HeatingQC<-as.integer(revalue(data$HeatingQC, Qualities))
+
+```
+```{r}
+table(data$PavedDrive)
+data$PavedDrive<-as.integer(revalue(data$PavedDrive, c('N'=0, 'P'=1, 'Y'=2)))
+
+```
+
+```{r}
+table(data$Heating)
+data$Heating <- as.factor(data$Heating)
+```
+
+```{r}
+table(data$Foundation)
+data$Foundation <- as.factor(data$Foundation)
+```
+
+```{r}
+table(data$RoofMatl)
+data$RoofMatl <- as.factor(data$RoofMatl)
+```
+
+
+```{r}
+table(data$MoSold)
+data$MoSold <- as.factor(data$MoSold)
+```
+```{r}
+table(data$MSSubClass)
+data$MSSubClass <- as.factor(data$MSSubClass)
+```
+
+##Important variables
+
+```{r}
+data <-data %>% mutate("Remod" = ifelse(data$YearBuilt==data$YearRemodAdd, 0, 1),
+                       "Age" = as.numeric(data$YrSold)-data$YearRemodAdd,
+                       "New" = ifelse(data$YrSold==data$YearBuilt, 1, 0), 
+                       "TotalSF" = TotalBsmtSF + X1stFlrSF+ X2ndFlrSF + GarageArea, 
+                       "PropGrLivArea" = GrLivArea / TotalSF,
+                       "TotalEstLivableSF" = TotalSF - BsmtUnfSF - GarageArea,
+                        "PropLivGrLivArea" = GrLivArea / TotalEstLivableSF,
+                       "PropUnlivArea" = (BsmtUnfSF + GarageArea) / TotalSF,
+                       "TotalFullBath" = BsmtFullBath + FullBath,
+                       "TotalHalfBath" = BsmtHalfBath + HalfBath,
+                       "TotalBath" = TotalFullBath + .5*TotalHalfBath, 
+                       "TotRooms" = TotRmsAbvGrd + TotalBath,
+                       "HasFence" = ifelse(Fence=='None', 0, 1),
+                       "HasPool" = ifelse(PoolArea > 0, 1, 0),
+                       "HasWoodDeck" = ifelse(WoodDeckSF > 0, 1,0),
+                       "HasPorch" = ifelse(OpenPorchSF > 0 | EnclosedPorch > 0| X3SsnPorch > 0 | ScreenPorch > 0, 1, 0),
+                       "HasGarage" = ifelse(GarageType=='No Garage', 0, 1),
+                       "HasAlleyAccess" = ifelse(Alley=='None', 0, 1),
+                       "HasOpenPorch" = ifelse(OpenPorchSF >0, 1, 0),
+                       "HasEnclosedPorch" = ifelse(EnclosedPorch > 0, 1, 0),
+                       "HasX3SsnPorch" = ifelse(X3SsnPorch > 0, 1 , 0),
+                       "HasScreenPorch" = ifelse(ScreenPorch > 0, 1, 0),
+                       "HasBsmt" = ifelse(TotalBsmtSF > 0, 1, 0))
+
+#Any houses that are less than 2 Stories should not have 2nd floor square footage. Any 2nfFlrSF for 1.5 story houses will be added to the 1stFlrSF and 2ndFlrSF will be set to 0. X2ndFlr will be set to 'N' for these houses.
+data <- data %>%
+  mutate("X1stFlrSF" = ifelse(HouseStyle == '1.5Fin' | HouseStyle == '1.5Unf'| HouseStyle == '1Story', X1stFlrSF+X2ndFlrSF, X1stFlrSF),
+         "X2ndFlrSF" = ifelse(HouseStyle == '1.5Fin' | HouseStyle == '1.5Unf' | HouseStyle == '1Story', 0, X2ndFlrSF),
+         "X2ndFlr" = ifelse(X2ndFlrSF > 0,1,0))
+
+
+data$YrSold <- as.factor(data$YrSold)
+data$Remod <-as.factor(data$Remod)
+data$New <-as.factor(data$New)
+data$HasFence <- as.factor(data$HasFence)
+data$HasPool <- as.factor(data$HasPool)
+data$HasPorch <- as.factor(data$HasPorch)
+data$HasGarage <- as.factor(data$HasGarage)
+data$HasAlleyAccess <- as.factor(data$HasAlleyAccess)
+data$HasOpenPorch <- as.factor(data$HasOpenPorch)
+data$HasEnclosedPorch <- as.factor(data$HasEnclosedPorch)
+data$HasX3SsnPorch <- as.factor(data$HasX3SsnPorch)
+data$HasScreenPorch <- as.factor(data$HasScreenPorch)
+data$HasBsmt <- as.factor(data$HasBsmt)
+data$X2ndFlr <- as.factor(data$X2ndFlr)
+
+
+data$ConditionNormal <- factor(with(data, ifelse(Condition1=='Norm' | Condition2=='Norm', 1, 0)))
+
+data$ConditionArtery <- factor(with(data, ifelse(Condition1=='Artery'|Condition2=='Artery', 1, 0)))
+
+data$ConditionPosA <- factor(with(data, ifelse(Condition1=='PosA'|Condition2=='PosA', 1, 0)))
+
+data$ConditionPosN <- factor(with(data, ifelse(Condition1=='PosN'|Condition2=='PosN', 1, 0)))
+
+data$ConditionRRAe <- factor(with(data, ifelse(Condition1=='RRAe'|Condition2=='RRAe', 1, 0)))
+
+data$ConditionRRAn <- factor(with(data, ifelse(Condition1=='RRAn'|Condition2=='RRAn', 1, 0)))
+
+data$ConditionRRNe <- factor(with(data, ifelse(Condition1=='RRNe'|Condition2=='RRNe', 1, 0)))
+
+data$ConditionRRNn <- factor(with(data, ifelse(Condition1=='RRNn'|Condition2=='RRNn', 1, 0)))
+
+data$ExteriorAsbShng <- factor(with(data, ifelse(Exterior1st=='AsbShng'|Exterior2nd=='AsbShng', 1, 0)))
+
+data$ExteriorAsphShn <- factor(with(data, ifelse(Exterior1st=='AsphShn'|Exterior2nd=='AsphShn', 1, 0)))
+
+data$ExteriorBrkComm <- factor(with(data, ifelse(Exterior1st=='BrkComm'|Exterior2nd=='BrkComm', 1, 0)))
+
+data$ExteriorBrkFace <- factor(with(data, ifelse(Exterior1st=='BrkFace'|Exterior2nd=='BrkFace', 1, 0)))
+
+data$ExteriorCBlock <- factor(with(data, ifelse(Exterior1st=='CBlock'|Exterior2nd=='CBlock', 1, 0)))
+
+data$ExteriorCmentBd <- factor(with(data, ifelse(Exterior1st=='CmentBd'|Exterior2nd=='CmentBd', 1, 0)))
+
+data$ExteriorHdBoard <- factor(with(data, ifelse(Exterior1st=='HdBoard'|Exterior2nd=='HdBoard', 1, 0)))
+
+data$ExteriorImStucc <- factor(with(data, ifelse(Exterior1st=='ImStucc'|Exterior2nd=='ImStucc', 1, 0)))
+
+data$ExteriorMetalSd <- factor(with(data, ifelse(Exterior1st=='MetalSd'|Exterior2nd=='MetalSd', 1, 0)))
+
+data$ExteriorOther <- factor(with(data, ifelse(Exterior1st=='Other'|Exterior2nd=='Other', 1, 0)))
+
+data$ExteriorPlywood <- factor(with(data, ifelse(Exterior1st=='Plywood'|Exterior2nd=='Plywood', 1, 0)))
+
+data$ExteriorStone <- factor(with(data, ifelse(Exterior1st=='Stone'|Exterior2nd=='Stone', 1, 0)))
+
+data$ExteriorStucco <- factor(with(data, ifelse(Exterior1st=='Stucco'|Exterior2nd=='Stucco', 1, 0)))
+
+data$ExteriorVinylSd <- factor(with(data, ifelse(Exterior1st=='VinylSd'|Exterior2nd=='VinylSd', 1, 0)))
+
+data$ExteriorWdSdng <- factor(with(data, ifelse(Exterior1st=='Wd Sdng'|Exterior2nd=='Wd Sdng', 1, 0)))
+
+data$ExteriorWdShng <- factor(with(data, ifelse(Exterior1st=='Wd Shng'|Exterior2nd=='Wd Shng', 1, 0)))
+```
+
+
+```{r}
+numeric.var <- which(sapply(data, is.numeric)) 
+factor.var <- which(sapply(data, is.factor)) 
+names(factor.var)
+names(numeric.var)
+length(numeric.var)
+length(factor.var)
+```
+
+```{r}
+data.numeric <- data[, numeric.var]
+cor.numvar <- cor(data.numeric, use="pairwise.complete.obs", method = "pearson") 
+#cor.numvar
+cor.sorted <- as.matrix(sort(cor.numvar[,'SalePrice'], decreasing = T))
+high.cor <- names(which(apply(cor.sorted, 1 , function(x) abs(x)>0.5)))
+#high.cor
+cor.numvar <- cor.numvar[high.cor, high.cor]
+heatmap(cor.numvar, Colv = NA, Rowv = NA, scale="column")
+corrplot.mixed(cor.numvar, tl.col="chocolate2", tl.pos = "lt",tl.cex = 0.6,cl.cex = 0.6, number.cex=0.6,outline= TRUE)
+```
+
+```{r}
+drop.var <- c('YearRemodAdd', 'GarageYrBlt', 'GarageArea', 'GarageCond', 'TotalRmsAbvGrd', 'BsmtFinSF1','X1stFlrSF', 'Condition1', 'Condition2', 'Exterior1st', 'Exterior2nd')
+
+data <- data[,!(names(data) %in% drop.var)]
+```
+
+```{r}
+data <- data[-c(524, 1299),]
+```
+
+
+
+```{r}
+numeric.name <- numeric.name[!(numeric.name %in% c('MSSubClass', 'MoSold', 'YrSold', 'SalePrice', 'OverdataQual', 'OverdataCond'))] 
+numeric.name <- append(numeric.name, c('Age', 'TotalSqFeet'))
+
+DFnumeric <- data[,names(data) %in% numeric.name]
+DFfactors <- data[,!(names(data) %in% numeric.name)]
+DFfactors <- DFfactors[, names(DFfactors) != 'SalePrice']
+length(DFnumeric)
+length(DFfactors)
+```
+```{r}
+for(i in 1:ncol(DFnumeric)){
+        if (abs(skew(DFnumeric[,i]))>0.8){
+                DFnumeric[,i] <- log(DFnumeric[,i] +1)
+        }
+}
+```
+```{r}
+PreNum <- preProcess(DFnumeric, method=c("center", "scale"))
+#PreNum
+DFnorm <- predict(PreNum, DFnumeric)
+dim(DFnorm)
+DFdummies <- as.data.frame(model.matrix(~.-1, DFfactors))
+dim(DFdummies)
+```
+
+```{r}
+data1 <- cbind(DFnorm, DFdummies)
+```
+
+
+```{r}
+data$SalePrice <- log(data$SalePrice) 
+skew(data$SalePrice)
+qqnorm(data$SalePrice)
+qqline(data$SalePrice)
+```
+
+```{r}
+ggplot(data=data[!is.na(data$SalePrice),], aes(x=SalePrice)) +
+        geom_histogram(fill="darkcyan") +
+        ggtitle("Lognormal distribution")
+```
+
+
+```{r}
+train <- data1[!is.na(data$SalePrice),]
+test <- data1[is.na(data$SalePrice),]
+```
+
+#Model Building
+##Linear Regression
+```{r}
+lm.base<-lm(data$SalePrice[!is.na(data$SalePrice)] ~.,train)
+par(mfrow = c(2, 2))
+plot(lm.base)
+```
+```{r}
+lm.pred <- predict(lm.base,test)
+pred<-exp(lm.pred)
+prediction1 <- data.frame(Id = Id_labels,SalePrice = pred)
+write.csv(prediction1, file = 'prediction1.csv', row.names = F)
+```
+*0.13048 from Kaggle*
+
+
+##Stepwise Selection
+###Forward selection
+```{r}
+empty <- lm(data$SalePrice[!is.na(data$SalePrice)] ~1, data=train)
+full <- lm(data$SalePrice[!is.na(data$SalePrice)] ~., data=train) 
+set.seed(2)
+lm.for <- step(empty, scope=list(lower=empty, upper=full), direction="forward")
+summary(lm.for)
+lm.pred <- predict(lm.for,test)
+res1 <- data.frame(Id = Id_labels, SalePrice = exp(lm.pred))
+write.csv(res1, file = "forward.csv", row.names = FALSE)
+```
+*score 0.12583 From Kaggle*
+
+###Both selection
+```{r}
+empty <- lm(data$SalePrice[!is.na(data$SalePrice)] ~1, data=train)
+full <- lm(data$SalePrice[!is.na(data$SalePrice)] ~., data=train) 
+set.seed(2)
+lm.for <- step(empty, scope=list(lower=empty, upper=full), direction="both")
+summary(lm.for)
+lm.pred <- predict(lm.for,test)
+both <- data.frame(Id = Id_labels, SalePrice = exp(lm.pred))
+write.csv(both, file = "both.csv", row.names = FALSE)
+```
+*.012623 from Kaggle*
+##Shrinkage Methods
+###Ridge
+```{r}
+X<- model.matrix(data$SalePrice[!is.na(data$SalePrice)] ~.,data = train)[,-1]
+y<- data$SalePrice[!is.na(data$SalePrice)]
+set.seed(101)
+ridge.model<-glmnet(X,y,alpha = 0)
+ridge.model$lambda
+coef(ridge.model, s = ridge.model$lambda[100])
+coef(ridge.model, s = ridge.model$lambda[1])
+cv.out <- cv.glmnet(X,y,alpha = 0, nfolds = 10)
+cv.out$lambda.min
+cv.out$cvm
+plot(cv.out)
+cv.out <- cv.glmnet(X,y,alpha = 1, nfolds = 10)
+ridge_coef<-predict(cv.out, type = "coefficients", s = cv.out$lambda.min)
+length(ridge_coef[ridge_coef != 0]) #variable used
+length(ridge_coef[ridge_coef == 0]) #variable not used
+```
+```{r}
+test.X <- as.matrix(test)
+pred<-predict(ridge.model, s = cv.out$lambda.min, newx = test.X)[,1]
+predictions<-exp(pred)
+prediction_ridge<-exp(pred)
+prediction3 <- data.frame(Id = Id_labels,SalePrice = predictions)
+#prediction3
+write.csv(prediction3, file = 'prediction3.csv', row.names = F)
+```
+*0.12337 from kaggle*
+
+###Lasso:
+```{r}
+X<- model.matrix(data$SalePrice[!is.na(data$SalePrice)] ~.,data = train)[,-1]
+y<- data$SalePrice[!is.na(data$SalePrice)]
+set.seed(101)
+lasso.model<-glmnet(X,y,alpha = 1,lambda = seq(0.001,0.1,by = 0.0005))
+lasso.model$lambda
+cv.out <- cv.glmnet(X,y,alpha = 1, nfolds = 10)
+cv.out$lambda.min
+cv.out$cvm
+plot(cv.out)
+lasso_coef<-predict(cv.out, type = "coefficients", s = cv.out$lambda.min)
+length(lasso_coef[lasso_coef != 0]) #variable used
+length(lasso_coef[lasso_coef == 0]) #variable not used
+```
+```{r}
+test.X <- as.matrix(test)
+pred<-predict(lasso.model, s = cv.out$lambda.min, newx = test.X)[,1]
+predictions<-exp(pred)
+prediction_lasso<-exp(pred)
+prediction4 <- data.frame(Id = Id_labels,SalePrice = predictions)
+#prediction4
+write.csv(prediction4, file = 'prediction4.csv', row.names = F)
+```
+*0.12078 from kaggle*
+
+###Elastic Net
+```{r}
+X<- model.matrix(data$SalePrice[!is.na(data$SalePrice)] ~.,data = train)[,-1]
+y<- data$SalePrice[!is.na(data$SalePrice)]
+set.seed(101)
+
+elasticnet.model = cv.glmnet(X,y,type.measure = "mse",nfolds=10)
+
+for (i in 0:10){
+  assign(paste("elasticnet.model",i,sep = ""),
+  cv.glmnet(X,y, type.measure = "mse",family="gaussian", alpha=i/10))
+}
+
+plot(elasticnet.model)
+```
+```{r}
+test.X <- as.matrix(test)
+pred<-predict(elasticnet.model, newx = test.X)[,1]
+predictions<-exp(pred)
+prediction5 <- data.frame(Id = Id_labels,SalePrice = predictions)
+#prediction5
+write.csv(prediction5, file = 'prediction5.csv', row.names = F)
+```
+*0.12445 from kaggle*
+
+###Weighted model
+```{r}
+Weighted_model <- data.frame(Id = Id_labels, SalePrice = (prediction_ridge+3*prediction_lasso)/4)
+write.csv(Weighted_model, file = 'prediction6.csv', row.names = F)
+```
+*0.12052 from kaggle*
+
+##Generalized Additive Models
+
+```{r}
+saleprice <- data$SalePrice[!is.na(data$SalePrice)]
+gam.lm.fit<-lm(saleprice ~ s(OverallQual,df=5) + s(Age,df=5) + s(TotalBsmtSF,df = 5) + s(LotArea,df= 5) ,data = train)
+par(mfrow = c(2,2))
+plot.Gam(gam.lm.fit, se = TRUE, col = 'darkolivegreen')
+```
+```{r}
+pred<-exp(predict(gam.lm.fit,test))
+prediction8<-data.frame(Id = Id_labels, SalePrice =  pred)
+write.csv(prediction8, file = "prediction8.csv", row.names = FALSE)
+```
+*0.18084 from kaggle*
+
+__Regression Trees__
+```{r}
+library(tree)
+saleprice<-data$SalePrice[!is.na(data$SalePrice)]
+train.tree<-data.frame(train)
+tree.fit<- tree(saleprice~., data = train.tree)
+summary(tree.fit)
+par(mfrow = c(1,1))
+plot(tree.fit)
+text(tree.fit,pretty = 0)
+set.seed(2019)
+cv.out<-cv.tree(tree.fit, K = 10)
+par(mfrow = c(1,2))
+plot(cv.out$k,cv.out$dev,type = "b")
+plot(cv.out$size,cv.out$dev,type = "b")
+prune.out<-prune.tree(tree.fit,best = 8)
+plot(prune.out)
+text(prune.out,pretty= 0)
+```
+
+```{r}
+test.x<-data.frame(test)
+pred<-exp(predict(prune.out,newdata = test.x))
+prediction9<-data.frame(Id = Id_labels, SalePrice =  pred)
+
+write.csv(prediction9, file = "prediction9.csv", row.names = FALSE)
+```
+*0.21620 from Kaggle*
+
+##Bagging
+```{r}
+bag.out<-randomForest(saleprice~.,data = train.tree, mtry = 178, importance =T)
+summary(bag.out)
+```
+```{r}
+importance(bag.out)
+varImpPlot(bag.out)
+test.x<-data.frame(test)
+pred<-exp(predict(bag.out,newdata = test.x))
+prediction10<-data.frame(Id = Id_labels, SalePrice =  pred)
+
+write.csv(prediction10, file = "prediction10.csv", row.names = FALSE)
+```
+*0.13943 from Kaggle*
+
+##Random Forest
+```{r}
+rf <- randomForest(saleprice ~., data = train.tree,mtry=round(sqrt(178)),importance = T)
+rf
+```
+```{r}
+importance(rf)
+varImpPlot(rf)
+test.x<-data.frame(test)
+pred<-exp(predict(rf,newdata = test.x))
+prediction11<-data.frame(Id = Id_labels, SalePrice =  pred)
+
+write.csv(prediction11, file = "prediction11.csv", row.names = FALSE)
+```
+*0.14555 from Kaggle*
+
+##Boosting
+```{r}
+gbm.cv.out <- gbm(saleprice ~., data = train.tree, distribution = "gaussian",shrinkage = 0.01, n.trees= 1000,interaction.depth = 4,cv.folds = 10)
+which.min(gbm.cv.out$cv.error)
+summary(gbm.cv.out)
+```
+```{r}
+test.x<-data.frame(test)
+pred<-exp(predict(gbm.cv.out,newdata = test.x))
+prediction12<-data.frame(Id = Id_labels, SalePrice =  pred)
+write.csv(prediction12, file = "prediction12.csv", row.names = FALSE)
+```
+*0.12553 from Kaggle*
